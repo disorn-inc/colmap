@@ -29,6 +29,8 @@
 //
 // Author: Johannes L. Schoenberger (jsch-at-demuc-dot-de)
 
+#include <map>
+
 #include "base/camera_rig.h"
 
 #include "util/misc.h"
@@ -41,14 +43,14 @@ size_t CameraRig::NumCameras() const { return rig_cameras_.size(); }
 
 size_t CameraRig::NumSnapshots() const { return snapshots_.size(); }
 
-bool CameraRig::HasCamera(const camera_t camera_id) const {
+bool CameraRig::snapshot_has_camera(const camera_t camera_id) const {
   return rig_cameras_.count(camera_id);
 }
 
 camera_t CameraRig::RefCameraId() const { return ref_camera_id_; }
 
 void CameraRig::SetRefCameraId(const camera_t camera_id) {
-  CHECK(HasCamera(camera_id));
+  CHECK(snapshot_has_camera(camera_id));
   ref_camera_id_ = camera_id;
 }
 
@@ -68,7 +70,7 @@ const std::vector<std::vector<image_t>>& CameraRig::Snapshots() const {
 void CameraRig::AddCamera(const camera_t camera_id,
                           const Eigen::Vector4d& rel_qvec,
                           const Eigen::Vector3d& rel_tvec) {
-  CHECK(!HasCamera(camera_id));
+  CHECK(!snapshot_has_camera(camera_id));
   CHECK_EQ(NumSnapshots(), 0);
   RigCamera rig_camera;
   rig_camera.rel_qvec = rel_qvec;
@@ -79,33 +81,62 @@ void CameraRig::AddCamera(const camera_t camera_id,
 void CameraRig::AddSnapshot(const std::vector<image_t>& image_ids) {
   CHECK(!image_ids.empty());
   CHECK_LE(image_ids.size(), NumCameras());
+  // TODO why did I want to change this check?!
+  // heuristic check for presence of all cameras in this snapshot
+  // CHECK_EQ(image_ids.size(), NumCameras());
   CHECK(!VectorContainsDuplicateValues(image_ids));
   snapshots_.push_back(image_ids);
 }
 
 void CameraRig::Check(const Reconstruction& reconstruction) const {
-  CHECK(HasCamera(ref_camera_id_));
+  CHECK(snapshot_has_camera(ref_camera_id_));
 
   for (const auto& rig_camera : rig_cameras_) {
     CHECK(reconstruction.ExistsCamera(rig_camera.first));
   }
+
+  // cache false map for this reconstruction
+  // std::map<camera_t, bool> initialize_as_no_cameras;
+  // for(const auto& it : reconstruction.Cameras()) {
+  //   initialize_as_no_cameras[it.first] = false;
+  // }
 
   std::unordered_set<image_t> all_image_ids;
   for (const auto& snapshot : snapshots_) {
     CHECK(!snapshot.empty());
     CHECK_LE(snapshot.size(), NumCameras());
     bool has_ref_camera = false;
+
+    // TODO why the hell did I want to change from "needs reference camera in snapshot"
+    // to "every snapshot needs all cameras?!?!"
+    // CHECK_EQ(snapshot.size(), NumCameras());
+    // std::map<camera_t, bool> snapshot_has_camera(initialize_as_no_cameras);
     for (const auto image_id : snapshot) {
       CHECK(reconstruction.ExistsImage(image_id));
       CHECK_EQ(all_image_ids.count(image_id), 0);
       all_image_ids.insert(image_id);
       const auto& image = reconstruction.Image(image_id);
-      CHECK(HasCamera(image.CameraId()));
+      CHECK(snapshot_has_camera(image.CameraId()));
       if (image.CameraId() == ref_camera_id_) {
         has_ref_camera = true;
+        break;
       }
+      // snapshot_has_camera[image.CameraId()] = true;
     }
+
+    // This also ensures, implicitly, that the ref camera is present,
+    // as ExistsCamera() is called beforehand for all cameras,
+    // including the ref camera.
+    // bool all_cameras_in_snapshot = true;
+    // for(const auto& it : snapshot_has_camera) {
+    //   if (not it.second) {
+    //     all_cameras_in_snapshot = false;
+    //     break;
+    //   }
+    // }
+
     CHECK(has_ref_camera);
+    // CHECK(all_cameras_in_snapshot);
   }
 }
 
@@ -129,10 +160,19 @@ double CameraRig::ComputeScale(const Reconstruction& reconstruction) const {
   CHECK_GT(NumSnapshots(), 0);
   CHECK_GT(NumCameras(), 0);
   double scaling_factor = 0;
+  // Calculate scaling factor as median of all available factors.
+  // This is more robust to outliers than simple averaging.
+  // std::vector<double> scalingFactors;
   size_t num_dists = 0;
   std::vector<Eigen::Vector3d> rel_proj_centers(NumCameras());
   std::vector<Eigen::Vector3d> abs_proj_centers(NumCameras());
   for (const auto& snapshot : snapshots_) {
+    // TODO for the 3rd time... why this check?
+    // if (snapshot.size() < NumCameras()) {
+    //   std::cout << "WARNING: Snapshot does not contain complete rig. "
+    //             << "Skipping snapshot!\n";
+    //   continue;
+    // }
     // Compute the projection relative and absolute projection centers.
     for (size_t i = 0; i < NumCameras(); ++i) {
       const auto& image = reconstruction.Image(snapshot[i]);
@@ -152,6 +192,7 @@ double CameraRig::ComputeScale(const Reconstruction& reconstruction) const {
         if (rel_dist > kMinDist && abs_dist > kMinDist) {
           scaling_factor += rel_dist / abs_dist;
           num_dists += 1;
+          // scalingFactors.push_back(rel_dist / abs_dist);
         }
       }
     }
@@ -162,6 +203,8 @@ double CameraRig::ComputeScale(const Reconstruction& reconstruction) const {
   }
 
   return scaling_factor / num_dists;
+  // std::sort(scalingFactors.begin(), scalingFactors.end());
+  // return scalingFactors[scalingFactors.size()/2];
 }
 
 void CameraRig::ComputeRelativePoses(const Reconstruction& reconstruction) {
@@ -181,6 +224,7 @@ void CameraRig::ComputeRelativePoses(const Reconstruction& reconstruction) {
       const auto& image = reconstruction.Image(image_id);
       if (image.CameraId() == ref_camera_id_) {
         ref_image = &image;
+        break;  // IDs are unique; No need to keep checking once reference has been found
       }
     }
 
