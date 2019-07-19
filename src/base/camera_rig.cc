@@ -43,14 +43,14 @@ size_t CameraRig::NumCameras() const { return rig_cameras_.size(); }
 
 size_t CameraRig::NumSnapshots() const { return snapshots_.size(); }
 
-bool CameraRig::snapshot_has_camera(const camera_t camera_id) const {
+bool CameraRig::HasCamera(const camera_t camera_id) const {
   return rig_cameras_.count(camera_id);
 }
 
 camera_t CameraRig::RefCameraId() const { return ref_camera_id_; }
 
 void CameraRig::SetRefCameraId(const camera_t camera_id) {
-  CHECK(snapshot_has_camera(camera_id));
+  CHECK(HasCamera(camera_id));
   ref_camera_id_ = camera_id;
 }
 
@@ -70,7 +70,7 @@ const std::vector<std::vector<image_t>>& CameraRig::Snapshots() const {
 void CameraRig::AddCamera(const camera_t camera_id,
                           const Eigen::Vector4d& rel_qvec,
                           const Eigen::Vector3d& rel_tvec) {
-  CHECK(!snapshot_has_camera(camera_id));
+  CHECK(!HasCamera(camera_id));
   CHECK_EQ(NumSnapshots(), 0);
   RigCamera rig_camera;
   rig_camera.rel_qvec = rel_qvec;
@@ -89,7 +89,7 @@ void CameraRig::AddSnapshot(const std::vector<image_t>& image_ids) {
 }
 
 void CameraRig::Check(const Reconstruction& reconstruction) const {
-  CHECK(snapshot_has_camera(ref_camera_id_));
+  CHECK(HasCamera(ref_camera_id_));
 
   for (const auto& rig_camera : rig_cameras_) {
     CHECK(reconstruction.ExistsCamera(rig_camera.first));
@@ -110,25 +110,25 @@ void CameraRig::Check(const Reconstruction& reconstruction) const {
     // TODO why the hell did I want to change from "needs reference camera in snapshot"
     // to "every snapshot needs all cameras?!?!"
     // CHECK_EQ(snapshot.size(), NumCameras());
-    // std::map<camera_t, bool> snapshot_has_camera(initialize_as_no_cameras);
+    // std::map<camera_t, bool> HasCamera(initialize_as_no_cameras);
     for (const auto image_id : snapshot) {
       CHECK(reconstruction.ExistsImage(image_id));
       CHECK_EQ(all_image_ids.count(image_id), 0);
       all_image_ids.insert(image_id);
       const auto& image = reconstruction.Image(image_id);
-      CHECK(snapshot_has_camera(image.CameraId()));
+      CHECK(HasCamera(image.CameraId()));
       if (image.CameraId() == ref_camera_id_) {
         has_ref_camera = true;
         break;
       }
-      // snapshot_has_camera[image.CameraId()] = true;
+      // HasCamera[image.CameraId()] = true;
     }
 
     // This also ensures, implicitly, that the ref camera is present,
     // as ExistsCamera() is called beforehand for all cameras,
     // including the ref camera.
     // bool all_cameras_in_snapshot = true;
-    // for(const auto& it : snapshot_has_camera) {
+    // for(const auto& it : HasCamera) {
     //   if (not it.second) {
     //     all_cameras_in_snapshot = false;
     //     break;

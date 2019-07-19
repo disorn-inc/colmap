@@ -1505,6 +1505,7 @@ int RunPointTriangulator(int argc, char** argv) {
 // If there is not a relative pose for every camera, extrinsics will be 
 // calculated from the given reconstruction instead.
 // Note that the pose of the reference camera must be identity.
+// TODO: Lift this restriction.
 //
 // An example configuration of a single camera rig:
 // [
@@ -1571,9 +1572,6 @@ int RunPointTriangulator(int argc, char** argv) {
 //            frame002.png
 //            ...
 //
-// TODO: Provide an option to manually / explicitly set the relative extrinsics
-// of the camera rig. At the moment, the relative extrinsics are automatically
-// inferred from the reconstruction.
 std::vector<CameraRig> ReadCameraRigConfig(
     const std::string& rig_config_path, const Reconstruction& reconstruction) {
   boost::property_tree::ptree pt;
@@ -1581,73 +1579,104 @@ std::vector<CameraRig> ReadCameraRigConfig(
 
   std::vector<CameraRig> camera_rigs;
   for (const auto& rig_config : pt) {
-    // rig needs at least 2 cameras to make sense!
-    // if (rig_config["cameras"].size() < 2) {
-    //   std::cout << "WARNING: The given rig config has less than two cameras!\n"
-    //             << "\tRig bundle adjustment only makes sense for two or more "
-    //             << "cameras! Skipping this config...\n";
-    //   continue;
-    // }
-    CameraRig camera_rig;
-
-    std::vector<std::string> image_prefixes;
-    for (const auto& camera : rig_config.second.get_child("cameras")) {
-      const int camera_id = camera.second.get<int>("camera_id");
-      image_prefixes.push_back(camera.second.get<std::string>("image_prefix"));
-      camera_rig.AddCamera(camera_id, ComposeIdentityQuaternion(),
-                           Eigen::Vector3d(0, 0, 0));
+    // Rig needs at least 2 cameras to make sense!
+    if (rig_config.second.get_child("cameras").size() < 2) {
+      std::cout << "WARNING: The given rig config has less than two cameras!\n"
+                << "\tRig bundle adjustment only makes sense for two or more "
+                << "cameras! Skipping this config...\n";
+      continue;
     }
 
-    // size_t extrinsicsGiven = 0;
-    // for (const auto& camera : rig_config["cameras"]) {
-    //   const camera_t camera_id = camera["camera_id"];
-    //   image_prefixes.push_back(camera["image_prefix"]);
+    CameraRig camera_rig;
+    const int ref_camera_id = rig_config.second.get<int>("ref_camera_id");
 
-    //   const auto& qvec = camera.find("qvec");
-    //   const auto& rmat = camera.find("rmat");
-    //   const auto& tvec = camera.find("tvec");
-    //   if (tvec != camera.end()) {
-    //     const auto& tvecDat = *tvec;
-    //     Eigen::Vector3d tvecEig(tvecDat[0], tvecDat[1], tvecDat[2]);
-    //     std::cout << "tvec: " << tvecEig << std::endl;
-    //     if (qvec != camera.end()) {
-    //       const auto& qvecDat = *qvec;
-    //       Eigen::Vector4d qvecEig(qvecDat[0], qvecDat[1], qvecDat[2], qvecDat[3]);
-    //       std::cout << "qvec: " << qvecEig << std::endl;
-    //       // if this is the reference camera, pose must be identity!
-    //       if (camera_id == refCameraId) {
-    //         CHECK_LT((Eigen::Vector3d(0, 0, 0) - tvecEig).norm(), 1.0e-10);
-    //         CHECK_LT((ComposeIdentityQuaternion() - qvecEig).norm(), 1.0e-10);
-    //       }
-    //       camera_rig.AddCamera(camera_id, qvecEig, tvecEig);
-    //       extrinsicsGiven++;
-    //       continue; // don't add another camera with identity pose below
-    //     }  else if (rmat != camera.end()) {
-    //       const auto& rmatDat = *rmat;
-    //       Eigen::Matrix3d rmatEig;
-    //       for (int y = 0; y < 3; y++) {
-    //           for (int x = 0; x < 3; x++) {
-    //               rmatEig(y, x) = rmatDat[y][x];
-    //           }
-    //       }
-    //       std::cout << "rmat: " << rmatEig << std::endl;
-    //       std::cout << "rmat converted: " << RotationMatrixToQuaternion(rmatEig) << std::endl;
-    //       // if this is the reference camera, pose must be identity!
-    //       if (camera_id == refCameraId) {
-    //         CHECK_LT((Eigen::Vector3d(0, 0, 0) - tvecEig).norm(), 1.0e-10);
-    //         CHECK_LT((Eigen::Matrix3d::Identity()  - rmatEig).norm(), 1.0e-10);
-    //       }
-    //       camera_rig.AddCamera(camera_id,
-    //                            RotationMatrixToQuaternion(rmatEig), tvecEig);
-    //       extrinsicsGiven++;
-    //       continue; // don't add another camera with identity pose below
-    //     }
-    //   }
+    std::vector<std::string> image_prefixes;
+    
+    // for (const auto& camera : rig_config.second.get_child("cameras")) {
+    //   const int camera_id = camera.second.get<int>("camera_id");
+    //   image_prefixes.push_back(camera.second.get<std::string>("image_prefix"));
     //   camera_rig.AddCamera(camera_id, ComposeIdentityQuaternion(),
     //                        Eigen::Vector3d(0, 0, 0));
     // }
 
-    camera_rig.SetRefCameraId(rig_config.second.get<int>("ref_camera_id"));
+    //////////////////////////////////////////////////////
+    size_t num_extrinsics_given = 0;
+    for (const auto& camera_pair : rig_config.second.get_child("cameras")) {
+      const auto& camera = camera_pair.second;
+      const int camera_id = camera.get<int>("camera_id");
+      image_prefixes.push_back(camera.get<std::string>("image_prefix"));
+
+      const auto& qvec_pair = camera.find("qvec");
+      const auto& rmat_pair = camera.find("rmat");
+      const auto& tvec_pair = camera.find("tvec");
+      if (tvec_pair != camera.not_found()) {
+        //const auto& tvec = tvec_pair.second;
+
+        std::vector<double> tvec_std_vector;
+        for (auto& it : camera.get_child("tvec")) {
+          tvec_std_vector.push_back(it.second.get_value<double>());
+        }
+        Eigen::Vector3d tvec_eigen_vector3d(tvec_std_vector[0],
+                                            tvec_std_vector[1],
+                                            tvec_std_vector[2]);
+        std::cout << "tvec: " << tvec_eigen_vector3d << std::endl;
+
+        if (qvec_pair != camera.not_found()) {
+          std::vector<double> qvec_std_vector;
+          for (auto& it : camera.get_child("qvec")) {
+            qvec_std_vector.push_back(it.second.get_value<double>());
+          }
+          Eigen::Vector4d qvec_eigen_vector4d(qvec_std_vector[0],
+                                              qvec_std_vector[1],
+                                              qvec_std_vector[2],
+                                              qvec_std_vector[3]);
+          std::cout << "qvec: " << qvec_eigen_vector4d << std::endl;
+
+          // if this is the reference camera, pose must be identity!
+          if (camera_id == ref_camera_id) {
+            CHECK_LT((Eigen::Vector3d(0, 0, 0) - tvec_eigen_vector3d).norm(), 1.0e-10);
+            CHECK_LT((ComposeIdentityQuaternion() - qvec_eigen_vector4d).norm(), 1.0e-10);
+          }
+
+          camera_rig.AddCamera(camera_id, qvec_eigen_vector4d, tvec_eigen_vector3d);
+          num_extrinsics_given++;
+        } else if (rmat_pair != camera.not_found()) {
+          Eigen::Matrix3d rmat_eigen_matrix3d;
+          int y = 0;
+          for (const auto& it_y : camera.get_child("rmat")) {
+              int x = 0;
+              for (const auto& it_x : it_y.second) {
+                rmat_eigen_matrix3d(y, x) = it_x.second.get_value<double>();
+                ++x;
+                CHECK_LT(x, 4);  // rmat must be 3x3
+              }
+              ++y;
+              CHECK_LT(y, 4);  // rmat must be 3x3
+          }
+          Eigen::Vector4d rmat_as_quaternion = RotationMatrixToQuaternion(rmat_eigen_matrix3d);
+          std::cout << "rmat: " << rmat_eigen_matrix3d << std::endl;
+          std::cout << "rmat converted: " << rmat_as_quaternion << std::endl;
+          // if this is the reference camera, pose must be identity!
+          if (camera_id == ref_camera_id) {
+            CHECK_LT((Eigen::Vector3d(0, 0, 0) - tvec_eigen_vector3d).norm(), 1.0e-10);
+            CHECK_LT((Eigen::Matrix3d::Identity()  - rmat_eigen_matrix3d).norm(), 1.0e-10);
+          }
+          camera_rig.AddCamera(camera_id, rmat_as_quaternion, tvec_eigen_vector3d);
+          num_extrinsics_given++;
+        } else {
+         // Add camera with identity pose, and don't count extrinsics as given
+         camera_rig.AddCamera(camera_id, ComposeIdentityQuaternion(),
+                              Eigen::Vector3d(0, 0, 0));
+        }
+      } else {
+        // Add camera with identity pose, and don't count extrinsics as given
+        camera_rig.AddCamera(camera_id, ComposeIdentityQuaternion(),
+                            Eigen::Vector3d(0, 0, 0));
+      }
+    }
+    ///////////////////////////////////////////////////////////
+
+    camera_rig.SetRefCameraId(ref_camera_id);
 
     std::unordered_map<std::string, std::vector<image_t>> snapshots;
     for (const auto image_id : reconstruction.RegImageIds()) {
@@ -1661,7 +1690,7 @@ std::vector<CameraRig> ReadCameraRigConfig(
       }
     }
 
-    // TODO I did the same thing here where instead of requiring the referecne camera to be in
+    // TODO I did the same thing here where instead of requiring the reference camera to be in
     // the snapshot, I require ALL of them... why?!
     // cache false map for this reconstruction
     // std::map<camera_t, bool> notHasCamera, hasCamera;
@@ -1699,9 +1728,9 @@ std::vector<CameraRig> ReadCameraRigConfig(
 
     camera_rig.Check(reconstruction);
 
-    // if (extrinsicsGiven < camera_rig.NumCameras()) {
+    // if (num_extrinsics_given < camera_rig.NumCameras()) {
     //   std::cout << "WARNING: " << camera_rig.NumCameras()
-    //             << " cameras, but only " << extrinsicsGiven
+    //             << " cameras, but only " << num_extrinsics_given
     //             << " extrinsics given.\n"
     //             << "\t Any given extrinsics will be discarded, "
     //             << "and instead will be calculated from the reconstruction!\n";
